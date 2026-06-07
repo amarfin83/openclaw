@@ -182,6 +182,35 @@ describe("buildTelegramMessageContext audio transcript body", () => {
     expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toEqual([0]);
   });
 
+  it("posts a failure notice without message_thread_id when General topic transcription fails", async () => {
+    transcribeFirstAudioMock.mockRejectedValueOnce(new Error("empty transcript"));
+
+    const ctx = await buildGroupVoiceContext({
+      messageId: 7,
+      chatId: -1001234567894,
+      title: "Test Group 5",
+      date: 1700000500,
+      fromId: 48,
+      firstName: "Grace",
+      fileId: "voice-7",
+      mediaPath: "/tmp/voice7.ogg",
+      messageThreadId: 1,
+      requireMention: false,
+      activationOverride: undefined,
+      forceWasMentioned: false,
+    });
+
+    expect(transcribeFirstAudioMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      -1001234567894,
+      "Расшифровка голосового не удалась. Я не получил читаемый текст из аудио.",
+      {},
+    );
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.Body).toContain("<media:audio>");
+    expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toBeUndefined();
+  });
+
   it("skips preflight transcription when disableAudioPreflight is true", async () => {
     transcribeFirstAudioMock.mockClear();
 

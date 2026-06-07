@@ -93,6 +93,10 @@ function formatAudioTranscriptEchoForTelegram(transcript: string): string {
   return `Оформленная расшифровка голосового\n\n${transcript.trim()}`;
 }
 
+function formatAudioTranscriptFailureEchoForTelegram(): string {
+  return "Расшифровка голосового не удалась. Я не получил читаемый текст из аудио.";
+}
+
 function formatAudioTranscriptAlreadyPostedForAgent(transcript: string): string {
   return `${formatAudioTranscriptForAgent(transcript)}\n\n[OpenClaw already posted the formatted transcript visibly to this Telegram chat/topic before this agent turn. If the audio contains no substantive request, reply exactly "NO_REPLY". If it does contain a request, answer the request without repeating the transcript.]`;
 }
@@ -127,6 +131,35 @@ async function sendTelegramAudioTranscriptEcho(params: {
     return true;
   } catch (err) {
     logVerbose(`telegram: formatted audio transcript echo failed: ${String(err)}`);
+    return false;
+  }
+}
+
+async function sendTelegramAudioTranscriptFailureEcho(params: {
+  bot: Bot;
+  isGroup: boolean;
+  chatId: number | string;
+  replyThreadId?: number;
+  thread?: TelegramThreadSpec | null;
+}): Promise<boolean> {
+  if (!params.isGroup) {
+    return false;
+  }
+  try {
+    await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      fn: () =>
+        params.bot.api.sendMessage(
+          params.chatId,
+          formatAudioTranscriptFailureEchoForTelegram(),
+          params.thread !== undefined
+            ? (buildTelegramThreadParams(params.thread) ?? {})
+            : (buildTypingThreadParams(params.replyThreadId) ?? {}),
+        ),
+    });
+    return true;
+  } catch (err) {
+    logVerbose(`telegram: audio transcript failure echo failed: ${String(err)}`);
     return false;
   }
 }
@@ -314,6 +347,7 @@ export async function resolveTelegramInboundBody(params: {
     !useAccessGroups || !allowForCommands.hasEntries || commandAuthorized;
 
   let preflightTranscript: string | undefined;
+  let preflightTranscriptionFailed = false;
   const needsPreflightTranscription =
     hasAudio &&
     !hasUserText &&
@@ -342,7 +376,12 @@ export async function resolveTelegramInboundBody(params: {
         cfg,
         agentDir: undefined,
       });
+      if (!preflightTranscript?.trim()) {
+        preflightTranscript = undefined;
+        preflightTranscriptionFailed = true;
+      }
     } catch (err) {
+      preflightTranscriptionFailed = true;
       logVerbose(`telegram: audio preflight transcription failed: ${String(err)}`);
     }
   }
@@ -361,6 +400,15 @@ export async function resolveTelegramInboundBody(params: {
           thread: threadSpec,
           transcript: preflightTranscript,
         });
+  if (preflightTranscriptionFailed) {
+    await sendTelegramAudioTranscriptFailureEcho({
+      bot,
+      isGroup,
+      chatId,
+      replyThreadId,
+      thread: threadSpec,
+    });
+  }
   const preflightTranscriptForAgent =
     preflightTranscript === undefined
       ? undefined
