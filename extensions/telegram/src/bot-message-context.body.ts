@@ -47,7 +47,9 @@ import {
 import {
   buildTelegramGroupPeerId,
   buildTelegramInboundOriginTarget,
+  buildTelegramThreadParams,
   buildTypingThreadParams,
+  type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
@@ -100,6 +102,7 @@ async function sendTelegramAudioTranscriptEcho(params: {
   isGroup: boolean;
   chatId: number | string;
   replyThreadId?: number;
+  thread?: TelegramThreadSpec | null;
   transcript?: string;
 }): Promise<boolean> {
   if (!params.isGroup) {
@@ -116,7 +119,9 @@ async function sendTelegramAudioTranscriptEcho(params: {
         params.bot.api.sendMessage(
           params.chatId,
           formatAudioTranscriptEchoForTelegram(transcript),
-          buildTypingThreadParams(params.replyThreadId) ?? {},
+          params.thread !== undefined
+            ? (buildTelegramThreadParams(params.thread) ?? {})
+            : (buildTypingThreadParams(params.replyThreadId) ?? {}),
         ),
     });
     return true;
@@ -190,6 +195,7 @@ export async function resolveTelegramInboundBody(params: {
   sessionKey?: string;
   resolvedThreadId?: number;
   replyThreadId?: number;
+  threadSpec?: TelegramThreadSpec;
   originatingTo?: string;
   routeAgentId?: string;
   effectiveGroupAllow: NormalizedAllowFrom;
@@ -217,6 +223,7 @@ export async function resolveTelegramInboundBody(params: {
     sessionKey,
     resolvedThreadId,
     replyThreadId,
+    threadSpec,
     originatingTo: providedOriginatingTo,
     routeAgentId,
     effectiveGroupAllow,
@@ -351,6 +358,7 @@ export async function resolveTelegramInboundBody(params: {
           isGroup,
           chatId,
           replyThreadId,
+          thread: threadSpec,
           transcript: preflightTranscript,
         });
   const preflightTranscriptForAgent =

@@ -151,6 +151,37 @@ describe("buildTelegramMessageContext audio transcript body", () => {
     expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toEqual([0]);
   });
 
+  it("omits message_thread_id when posting a formatted transcript in the General topic", async () => {
+    transcribeFirstAudioMock.mockResolvedValueOnce("general topic voice note");
+
+    const ctx = await buildGroupVoiceContext({
+      messageId: 6,
+      chatId: -1001234567894,
+      title: "Test Group 5",
+      date: 1700000450,
+      fromId: 47,
+      firstName: "Frank",
+      fileId: "voice-6",
+      mediaPath: "/tmp/voice6.ogg",
+      messageThreadId: 1,
+      requireMention: false,
+      activationOverride: undefined,
+      forceWasMentioned: false,
+    });
+
+    expect(transcribeFirstAudioMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      -1001234567894,
+      "Оформленная расшифровка голосового\n\ngeneral topic voice note",
+      {},
+    );
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.BodyForAgent).toContain(
+      "[OpenClaw already posted the formatted transcript visibly",
+    );
+    expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toEqual([0]);
+  });
+
   it("skips preflight transcription when disableAudioPreflight is true", async () => {
     transcribeFirstAudioMock.mockClear();
 

@@ -466,6 +466,7 @@ export const buildTelegramMessageContext = async ({
     senderUsername,
     resolvedThreadId,
     replyThreadId,
+    threadSpec,
     originatingTo,
     routeAgentId: route.agentId,
     sessionKey,
