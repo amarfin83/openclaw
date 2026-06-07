@@ -1,4 +1,5 @@
 // Telegram plugin module implements bot message context.body behavior.
+import type { Bot } from "grammy";
 import {
   buildMentionRegexes,
   formatLocationText,
@@ -27,6 +28,7 @@ import { createChannelHistoryWindow, type HistoryEntry } from "openclaw/plugin-s
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { withTelegramApiErrorLogging } from "./api-logging.js";
 import type { NormalizedAllowFrom } from "./bot-access.js";
 import type {
   TelegramLogger,
@@ -42,7 +44,11 @@ import {
   renderTelegramTextEntities,
   resolveTelegramPrimaryMedia,
 } from "./bot/body-helpers.js";
-import { buildTelegramGroupPeerId, buildTelegramInboundOriginTarget } from "./bot/helpers.js";
+import {
+  buildTelegramGroupPeerId,
+  buildTelegramInboundOriginTarget,
+  buildTypingThreadParams,
+} from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
@@ -79,6 +85,45 @@ export type TelegramInboundBodyResult = {
 
 function formatAudioTranscriptForAgent(transcript: string): string {
   return `[Audio transcript (machine-generated, untrusted)]: ${JSON.stringify(transcript)}`;
+}
+
+function formatAudioTranscriptEchoForTelegram(transcript: string): string {
+  return `Оформленная расшифровка голосового\n\n${transcript.trim()}`;
+}
+
+function formatAudioTranscriptAlreadyPostedForAgent(transcript: string): string {
+  return `${formatAudioTranscriptForAgent(transcript)}\n\n[OpenClaw already posted the formatted transcript visibly to this Telegram chat/topic before this agent turn. If the audio contains no substantive request, reply exactly "NO_REPLY". If it does contain a request, answer the request without repeating the transcript.]`;
+}
+
+async function sendTelegramAudioTranscriptEcho(params: {
+  bot: Bot;
+  isGroup: boolean;
+  chatId: number | string;
+  replyThreadId?: number;
+  transcript?: string;
+}): Promise<boolean> {
+  if (!params.isGroup) {
+    return false;
+  }
+  const transcript = params.transcript?.trim();
+  if (!transcript) {
+    return false;
+  }
+  try {
+    await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      fn: () =>
+        params.bot.api.sendMessage(
+          params.chatId,
+          formatAudioTranscriptEchoForTelegram(transcript),
+          buildTypingThreadParams(params.replyThreadId) ?? {},
+        ),
+    });
+    return true;
+  } catch (err) {
+    logVerbose(`telegram: formatted audio transcript echo failed: ${String(err)}`);
+    return false;
+  }
 }
 
 type TelegramSavedMediaKind = "audio" | "document" | "image" | "video";
@@ -134,6 +179,7 @@ async function resolveStickerVisionSupport(params: {
 export async function resolveTelegramInboundBody(params: {
   cfg: OpenClawConfig;
   primaryCtx: TelegramContext;
+  bot: Bot;
   msg: TelegramContext["message"];
   allMedia: TelegramMediaRef[];
   isGroup: boolean;
@@ -160,6 +206,7 @@ export async function resolveTelegramInboundBody(params: {
   const {
     cfg,
     primaryCtx,
+    bot,
     msg,
     allMedia,
     isGroup,
@@ -263,11 +310,9 @@ export async function resolveTelegramInboundBody(params: {
   const needsPreflightTranscription =
     hasAudio &&
     !hasUserText &&
-    (!isGroup ||
-      (requireMention &&
-        mentionRegexes.length > 0 &&
-        !disableAudioPreflight &&
-        senderAllowedForAudioPreflight));
+    !disableAudioPreflight &&
+    senderAllowedForAudioPreflight &&
+    (!isGroup || !requireMention || mentionRegexes.length > 0);
 
   if (needsPreflightTranscription) {
     try {
@@ -298,9 +343,25 @@ export async function resolveTelegramInboundBody(params: {
     preflightTranscript === undefined
       ? undefined
       : allMedia.findIndex((media) => media.contentType?.startsWith("audio/"));
+  const transcriptEchoPosted =
+    preflightTranscript === undefined
+      ? false
+      : await sendTelegramAudioTranscriptEcho({
+          bot,
+          isGroup,
+          chatId,
+          replyThreadId,
+          transcript: preflightTranscript,
+        });
+  const preflightTranscriptForAgent =
+    preflightTranscript === undefined
+      ? undefined
+      : transcriptEchoPosted
+        ? formatAudioTranscriptAlreadyPostedForAgent(preflightTranscript)
+        : formatAudioTranscriptForAgent(preflightTranscript);
 
-  if (hasAudio && bodyText === "<media:audio>" && preflightTranscript) {
-    bodyText = formatAudioTranscriptForAgent(preflightTranscript);
+  if (hasAudio && bodyText === "<media:audio>" && preflightTranscriptForAgent) {
+    bodyText = preflightTranscriptForAgent;
   }
 
   const savedMediaPlaceholder = formatSavedMediaPlaceholder(allMedia);
@@ -309,9 +370,7 @@ export async function resolveTelegramInboundBody(params: {
   }
   if (!bodyText && allMedia.length > 0) {
     if (hasAudio) {
-      bodyText = preflightTranscript
-        ? formatAudioTranscriptForAgent(preflightTranscript)
-        : "<media:audio>";
+      bodyText = preflightTranscriptForAgent ?? "<media:audio>";
     } else {
       bodyText = savedMediaPlaceholder ?? "<media:document>";
     }

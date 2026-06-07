@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const transcribeFirstAudioMock = vi.fn();
+const sendMessageMock = vi.fn();
 const DEFAULT_MODEL = "anthropic/claude-opus-4-5";
 const DEFAULT_WORKSPACE = "/tmp/openclaw";
 const DEFAULT_MENTION_PATTERN = "\\bbot\\b";
@@ -22,11 +23,16 @@ async function buildGroupVoiceContext(params: {
   firstName: string;
   fileId: string;
   mediaPath: string;
+  messageThreadId?: number;
+  requireMention?: boolean;
+  activationOverride?: boolean;
+  forceWasMentioned?: boolean;
   groupDisableAudioPreflight?: boolean;
   topicDisableAudioPreflight?: boolean;
 }) {
+  const requireMention = params.requireMention ?? true;
   const groupConfig = {
-    requireMention: true,
+    requireMention,
     ...(params.groupDisableAudioPreflight === undefined
       ? {}
       : { disableAudioPreflight: params.groupDisableAudioPreflight }),
@@ -39,21 +45,30 @@ async function buildGroupVoiceContext(params: {
   return buildTelegramMessageContextForTest({
     message: {
       message_id: params.messageId,
-      chat: { id: params.chatId, type: "supergroup", title: params.title },
+      chat: {
+        id: params.chatId,
+        type: "supergroup",
+        title: params.title,
+        is_forum: params.messageThreadId === undefined ? undefined : true,
+      },
       date: params.date,
       text: undefined,
       from: { id: params.fromId, first_name: params.firstName },
       voice: { file_id: params.fileId },
+      is_topic_message: params.messageThreadId === undefined ? undefined : true,
+      message_thread_id: params.messageThreadId,
     },
     allMedia: [{ path: params.mediaPath, contentType: "audio/ogg" }],
-    options: { forceWasMentioned: true },
+    options: params.forceWasMentioned === false ? undefined : { forceWasMentioned: true },
+    botApi: { sendMessage: sendMessageMock },
     cfg: {
       agents: { defaults: { model: DEFAULT_MODEL, workspace: DEFAULT_WORKSPACE } },
-      channels: { telegram: {} },
+      channels: { telegram: { groupPolicy: "open", groupAllowFrom: ["*"] } },
       messages: { groupChat: { mentionPatterns: [DEFAULT_MENTION_PATTERN] } },
     },
-    resolveGroupActivation: () => true,
-    resolveGroupRequireMention: () => true,
+    resolveGroupActivation: () =>
+      "activationOverride" in params ? params.activationOverride : true,
+    resolveGroupRequireMention: () => requireMention,
     resolveTelegramGroupConfig: () => ({
       groupConfig,
       topicConfig,
@@ -67,7 +82,10 @@ function expectTranscriptRendered(
 ) {
   const framed = `[Audio transcript (machine-generated, untrusted)]: ${JSON.stringify(transcript)}`;
   expect(ctx).not.toBeNull();
-  expect(ctx?.ctxPayload?.BodyForAgent).toBe(framed);
+  expect(ctx?.ctxPayload?.BodyForAgent).toContain(framed);
+  expect(ctx?.ctxPayload?.BodyForAgent).toContain(
+    "OpenClaw already posted the formatted transcript visibly",
+  );
   expect(ctx?.ctxPayload?.Body).toContain(framed);
   expect(ctx?.ctxPayload?.Body).not.toContain("<media:audio>");
   expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toEqual([0]);
@@ -81,6 +99,7 @@ function expectAudioPlaceholderRendered(ctx: Awaited<ReturnType<typeof buildGrou
 describe("buildTelegramMessageContext audio transcript body", () => {
   beforeEach(() => {
     transcribeFirstAudioMock.mockReset();
+    sendMessageMock.mockReset();
   });
 
   it("uses preflight transcript as BodyForAgent for mention-gated group voice messages", async () => {
@@ -99,6 +118,37 @@ describe("buildTelegramMessageContext audio transcript body", () => {
 
     expect(transcribeFirstAudioMock).toHaveBeenCalledTimes(1);
     expectTranscriptRendered(ctx, "hey bot please help");
+  });
+
+  it("posts a formatted transcript in the same topic for open group voice messages", async () => {
+    transcribeFirstAudioMock.mockResolvedValueOnce("topic voice note");
+
+    const ctx = await buildGroupVoiceContext({
+      messageId: 5,
+      chatId: -1001234567894,
+      title: "Test Group 5",
+      date: 1700000400,
+      fromId: 46,
+      firstName: "Erin",
+      fileId: "voice-5",
+      mediaPath: "/tmp/voice5.ogg",
+      messageThreadId: 123,
+      requireMention: false,
+      activationOverride: undefined,
+      forceWasMentioned: false,
+    });
+
+    expect(transcribeFirstAudioMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      -1001234567894,
+      "Оформленная расшифровка голосового\n\ntopic voice note",
+      { message_thread_id: 123 },
+    );
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.BodyForAgent).toContain(
+      "[OpenClaw already posted the formatted transcript visibly",
+    );
+    expect(ctx?.ctxPayload?.MediaTranscribedIndexes).toEqual([0]);
   });
 
   it("skips preflight transcription when disableAudioPreflight is true", async () => {

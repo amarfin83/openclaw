@@ -456,6 +456,7 @@ export const buildTelegramMessageContext = async ({
   const bodyResult = await resolveTelegramInboundBody({
     cfg,
     primaryCtx,
+    bot,
     msg,
     allMedia,
     isGroup,
